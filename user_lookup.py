@@ -24,6 +24,12 @@ from telethon.tl.types import (
     ChannelParticipantLeft,
 )
 
+
+def _is_group(entity) -> bool:
+    if isinstance(entity, Channel):
+        return bool(entity.megagroup)
+    return isinstance(entity, Chat)
+
 logger = logging.getLogger(__name__)
 TGME_RE = re.compile(r"(?:t\.me|telegram\.me)/([A-Za-z0-9_]{5,32})", re.IGNORECASE)
 
@@ -129,7 +135,7 @@ async def lookup_user_groups(
 
             for chat in res.chats:
                 uname = getattr(chat, "username", None)
-                if uname and uname not in results:
+                if uname and uname not in results and _is_group(chat):
                     title = getattr(chat, "title", uname)
                     cnt = getattr(chat, "participants_count", None)
                     results[uname] = {
@@ -168,7 +174,7 @@ async def lookup_user_groups(
             ))
             for chat in res2.chats:
                 uname = getattr(chat, "username", None)
-                if uname and uname not in results:
+                if uname and uname not in results and _is_group(chat):
                     results[uname] = {
                         "username": uname,
                         "title": getattr(chat, "title", uname),

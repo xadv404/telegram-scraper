@@ -114,6 +114,25 @@ CATEGORIES: dict[str, dict] = {
         ],
         "seeds": ["money mule", "cashout method", "money laundering"],
     },
+    "breach": {
+        "label": "Breach / Leak",
+        "color": "#a855f7",
+        "keywords": [
+            "breach", "leak", "leaks", "leaked", "database leak", "db leak",
+            "data leak", "dataleak", "hacked db", "hacked database",
+            "combolist", "combo list", "combo fresh", "fresh combo",
+            "credential", "credentials", "stuffing", "credential stuffing",
+            "account leak", "accounts leaked", "mail pass", "email pass",
+            "dox", "doxx", "doxxing", "personal info", "info leak",
+            "passport leak", "id leak", "ssn leak", "deanon",
+            "breached", "dehashed", "snusbase", "intelx",
+            "logs leak", "stealer logs", "redline logs", "raccoon logs",
+        ],
+        "seeds": [
+            "database leak fresh", "combolist 2024", "stealer logs shop",
+            "breach data telegram", "leaked accounts shop",
+        ],
+    },
     "other": {
         "label": "Autre",
         "color": "#64748b",

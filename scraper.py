@@ -20,12 +20,21 @@ from telethon.tl.types import (
     InputPeerEmpty,
     ChannelParticipantBanned,
     ChannelParticipantLeft,
+    Channel,
+    Chat,
 )
 from telethon.tl.functions.contacts import SearchRequest as ContactsSearchRequest
 from database import Session, Group, Member, GroupMember, ScrapeJob
 from categories import classify_group, get_category_seeds
 
 TGME_RE = re.compile(r"(?:t\.me|telegram\.me)/([A-Za-z0-9_]{5,32})", re.IGNORECASE)
+
+
+def is_group(entity) -> bool:
+    """True = supergroupe ou groupe basique. False = canal broadcast (on ignore)."""
+    if isinstance(entity, Channel):
+        return bool(entity.megagroup)
+    return isinstance(entity, Chat)
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +186,19 @@ class TelegramScraper:
             client, acc_idx = await self.am.get_client()
             entity = await client.get_entity(username)
 
+            if not is_group(entity):
+                self._log(f"@{username}: canal broadcast ignoré (groups only)")
+                db = Session()
+                try:
+                    g = db.query(Group).filter_by(username=username).first()
+                    if g:
+                        g.status = "error"
+                        g.error_msg = "canal broadcast, pas un groupe"
+                        db.commit()
+                finally:
+                    db.close()
+                return []
+
             # Récupérer description + classifier
             description = ""
             try:
@@ -319,9 +341,9 @@ class TelegramScraper:
             result = await client(GetSimilarChannelsRequest(group_entity))
             for chat in result.chats:
                 uname = getattr(chat, "username", None)
-                if uname:
+                if uname and is_group(chat):
                     found.append(uname)
-            self._log(f"getSimilarChannels: {len(found)} groupe(s) similaire(s) trouvé(s)")
+            self._log(f"getSimilarChannels: {len(found)} groupe(s) (canaux exclus)")
         except errors.FloodWaitError as e:
             await self.am.mark_flood(acc_idx, e.seconds)
             await asyncio.sleep(min(e.seconds, 60))
@@ -385,7 +407,7 @@ class TelegramScraper:
             ))
             for chat in result.chats:
                 uname = getattr(chat, "username", None)
-                if uname:
+                if uname and is_group(chat):
                     found.append(uname)
         except errors.FloodWaitError as e:
             await self.am.mark_flood(acc_idx, e.seconds)
@@ -412,11 +434,10 @@ class TelegramScraper:
                 await self._sleep()
                 try:
                     res = await client(ContactsSearchRequest(q=q, limit=50))
-                    for chat in res.chats:
-                        uname = getattr(chat, "username", None)
-                        if uname:
-                            found.append(uname)
-                    self._log(f"contacts.search '{q}': {len(res.chats)} résultats")
+                    groups_only = [c for c in res.chats if getattr(c, "username", None) and is_group(c)]
+                    for chat in groups_only:
+                        found.append(chat.username)
+                    self._log(f"contacts.search '{q}': {len(groups_only)}/{len(res.chats)} groupes (canaux exclus)")
                 except errors.FloodWaitError as e:
                     await self.am.mark_flood(acc_idx, e.seconds)
                     await asyncio.sleep(min(e.seconds, 60))
