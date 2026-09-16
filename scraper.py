@@ -1,13 +1,19 @@
 import asyncio
 import random
 import os
+import re
 import logging
 from datetime import datetime, timedelta
 from collections import deque
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import SearchRequest
-from telethon.tl.functions.channels import GetParticipantRequest, GetParticipantsRequest
+from telethon.tl.functions.channels import (
+    GetParticipantRequest,
+    GetParticipantsRequest,
+    GetSimilarChannelsRequest,
+)
+from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import (
     ChannelParticipantsSearch,
     InputMessagesFilterEmpty,
@@ -16,6 +22,8 @@ from telethon.tl.types import (
     ChannelParticipantLeft,
 )
 from database import Session, Group, Member, GroupMember, ScrapeJob
+
+TGME_RE = re.compile(r"(?:t\.me|telegram\.me)/([A-Za-z0-9_]{5,32})", re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
 
@@ -283,21 +291,70 @@ class TelegramScraper:
             db.close()
 
     # ------------------------------------------------------------------ #
-    #  Découverte de groupes via messages.search (from_id)                #
+    #  Découverte de groupes similaires (fonctionne dès le 1er groupe)   #
+    # ------------------------------------------------------------------ #
+
+    async def find_similar_groups(self, group_entity) -> list[str]:
+        """
+        Telegram recommande des groupes similaires via getSimilarChannels.
+        Fonctionne dès le groupe seed, sans aucun autre contexte.
+        """
+        found = []
+        await self._sleep()
+        try:
+            client, acc_idx = await self.am.get_client()
+            result = await client(GetSimilarChannelsRequest(group_entity))
+            for chat in result.chats:
+                uname = getattr(chat, "username", None)
+                if uname:
+                    found.append(uname)
+            self._log(f"getSimilarChannels: {len(found)} groupe(s) similaire(s) trouvé(s)")
+        except errors.FloodWaitError as e:
+            await self.am.mark_flood(acc_idx, e.seconds)
+            await asyncio.sleep(min(e.seconds, 60))
+        except Exception as e:
+            logger.debug(f"find_similar_groups: {e}")
+        return found
+
+    # ------------------------------------------------------------------ #
+    #  Parsing des bios des membres pour extraire des liens t.me          #
+    # ------------------------------------------------------------------ #
+
+    async def extract_groups_from_bio(self, user_entity) -> list[str]:
+        """
+        Récupère la bio complète d'un utilisateur et extrait tous les liens
+        t.me/username. Fonctionne dès le départ, sans contexte supplémentaire.
+        """
+        found = []
+        await self._sleep()
+        try:
+            client, acc_idx = await self.am.get_client()
+            full = await client(GetFullUserRequest(user_entity))
+            bio = (full.full_user.about or "").strip()
+            if bio:
+                for match in TGME_RE.findall(bio):
+                    found.append(match)
+        except errors.FloodWaitError as e:
+            await self.am.mark_flood(acc_idx, e.seconds)
+            await asyncio.sleep(min(e.seconds, 60))
+        except Exception as e:
+            logger.debug(f"extract_groups_from_bio: {e}")
+        return found
+
+    # ------------------------------------------------------------------ #
+    #  messages.search from_id (efficace quand plusieurs groupes connus)  #
     # ------------------------------------------------------------------ #
 
     async def find_user_groups_via_search(self, user_entity) -> list[str]:
         """
-        Cherche les messages publics d'un utilisateur et retourne les groupes
-        où il est actif. Utilise messages.search avec peer vide + from_id.
-        Bien plus complet que get_common_chats.
+        Cherche les messages de l'utilisateur dans les dialogues accessibles.
+        Limité au début (1 seul groupe), mais grandit avec le nombre de
+        groupes découverts (les groupes publics sont accessibles sans rejoindre).
         """
-        found_groups = []
+        found = []
         await self._sleep()
-
         try:
             client, acc_idx = await self.am.get_client()
-
             result = await client(SearchRequest(
                 peer=InputPeerEmpty(),
                 q="",
@@ -313,83 +370,51 @@ class TelegramScraper:
                 min_id=0,
                 hash=0,
             ))
-
             for chat in result.chats:
-                username = getattr(chat, "username", None)
-                if username:
-                    found_groups.append(username)
-
+                uname = getattr(chat, "username", None)
+                if uname:
+                    found.append(uname)
         except errors.FloodWaitError as e:
-            self._log(f"FloodWait {e.seconds}s search, rotation...")
             await self.am.mark_flood(acc_idx, e.seconds)
             await asyncio.sleep(min(e.seconds, 60))
         except Exception as e:
-            logger.debug(f"find_groups_via_search: {e}")
-
-        return found_groups
+            logger.debug(f"find_user_groups_via_search: {e}")
+        return found
 
     # ------------------------------------------------------------------ #
-    #  Vérification d'appartenance à des groupes connus (cross-ref)       #
+    #  Enregistrement d'un nouveau groupe découvert                       #
     # ------------------------------------------------------------------ #
 
-    async def check_user_in_known_groups(self, user_id: int) -> list[str]:
-        """
-        Pour chaque groupe déjà connu en DB (status=done), vérifie via
-        channels.getParticipant si l'utilisateur en est membre.
-        Requête légère (1 user x 1 groupe = 1 appel).
-        """
+    def _enqueue_group(
+        self,
+        username: str,
+        depth: int,
+        queue: deque,
+        visited: set[str],
+        source: str = "",
+    ):
+        if username in visited:
+            return
         db = Session()
         try:
-            known_groups = db.query(Group).filter(
-                Group.status == "done",
-                Group.username.isnot(None),
-            ).all()
-            group_usernames = [g.username for g in known_groups]
+            if not db.query(Group).filter_by(username=username).first():
+                db.add(Group(username=username, depth=depth, status="pending"))
+                db.commit()
         finally:
             db.close()
-
-        if not group_usernames:
-            return []
-
-        found = []
-        try:
-            client, acc_idx = await self.am.get_client()
-
-            for gname in group_usernames:
-                if self._stop:
-                    break
-                try:
-                    channel = await client.get_entity(gname)
-                    participant = await client(GetParticipantRequest(channel, user_id))
-                    p = participant.participant
-                    if not isinstance(p, (ChannelParticipantBanned, ChannelParticipantLeft)):
-                        found.append(gname)
-                except errors.UserNotParticipantError:
-                    pass
-                except errors.FloodWaitError as e:
-                    self._log(f"FloodWait {e.seconds}s cross-ref, pause...")
-                    await self.am.mark_flood(acc_idx, e.seconds)
-                    await asyncio.sleep(min(e.seconds, 60))
-                    client, acc_idx = await self.am.get_client()
-                except Exception:
-                    pass
-
-                await asyncio.sleep(random.uniform(0.5, 1.5))
-
-        except Exception as e:
-            logger.debug(f"check_user_in_known_groups: {e}")
-
-        return found
+        queue.append((username, depth))
+        self._log(f"Nouveau groupe: @{username}{f' (via {source})' if source else ''}")
 
     # ------------------------------------------------------------------ #
     #  Boucle principale                                                   #
     # ------------------------------------------------------------------ #
 
     async def run(self, seed_group: str):
-        self._log(f"Démarrage depuis @{seed_group}")
+        seed = seed_group.lstrip("@")
+        self._log(f"Démarrage depuis @{seed}")
 
         queue: deque[tuple[str, int]] = deque()
-        queue.append((seed_group.lstrip("@"), 0))
+        queue.append((seed, 0))
         visited_groups: set[str] = set()
 
         while queue and not self._stop:
@@ -400,23 +425,28 @@ class TelegramScraper:
                 continue
             visited_groups.add(group_username)
 
+            # --- Scraping des membres ---
             members = await self.scrape_group_members(group_username, depth)
 
-            db = Session()
+            self._update_job(groups_found=len(visited_groups))
+
+            # --- Groupes similaires (Telegram algo, fonctionne dès le 1er groupe) ---
             try:
-                job = db.query(ScrapeJob).get(self.job_id)
-                if job:
-                    job.groups_found = len(visited_groups)
-                    db.commit()
-            finally:
-                db.close()
+                client, _ = await self.am.get_client()
+                group_entity = await client.get_entity(group_username)
+                similar = await self.find_similar_groups(group_entity)
+                for g in similar:
+                    self._enqueue_group(g, depth + 1, queue, visited_groups,
+                                        f"similaire à @{group_username}")
+            except Exception as e:
+                logger.debug(f"similar groups error: {e}")
 
             if depth >= self.max_depth:
                 continue
 
-            # Limite à 40 membres pour la découverte de groupes (anti-ban)
+            # --- Découverte via les membres (bio + messages.search) ---
             sample = members[:40]
-            self._log(f"Recherche de groupes pour {len(sample)} membres de @{group_username}...")
+            self._log(f"Analyse de {len(sample)} membres de @{group_username}...")
 
             try:
                 client, _ = await self.am.get_client()
@@ -433,29 +463,20 @@ class TelegramScraper:
                 except Exception:
                     continue
 
-                # Méthode 1 : messages.search avec from_id
-                groups_via_search = await self.find_user_groups_via_search(user_entity)
+                # Bio → liens t.me (efficace dès le départ)
+                bio_groups = await self.extract_groups_from_bio(user_entity)
+                for g in bio_groups:
+                    self._enqueue_group(g, depth + 1, queue, visited_groups,
+                                        f"bio de @{member['username']}")
 
-                # Méthode 2 : vérification dans les groupes déjà connus
-                groups_via_crossref = await self.check_user_in_known_groups(
-                    int(member["telegram_id"])
-                )
+                # messages.search from_id (grandit avec les groupes connus)
+                search_groups = await self.find_user_groups_via_search(user_entity)
+                for g in search_groups:
+                    self._enqueue_group(g, depth + 1, queue, visited_groups,
+                                        f"messages @{member['username']}")
 
-                new_groups = set(groups_via_search + groups_via_crossref) - visited_groups
-
-                for g in new_groups:
-                    db = Session()
-                    try:
-                        if not db.query(Group).filter_by(username=g).first():
-                            db.add(Group(username=g, depth=depth + 1, status="pending"))
-                            db.commit()
-                    finally:
-                        db.close()
-                    queue.append((g, depth + 1))
-                    self._log(f"Nouveau groupe: @{g} (via @{member['username']})")
-
-                if i % 10 == 0:
-                    self._log(f"Progression: {i+1}/{len(sample)} membres traités")
+                if (i + 1) % 10 == 0:
+                    self._log(f"Progression membres: {i+1}/{len(sample)}")
 
         await self.am.disconnect_all()
         self._update_job(status="done", finished_at=datetime.utcnow())
