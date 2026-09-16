@@ -1,6 +1,6 @@
 # Telegram Group Scraper
 
-Scrape les membres d'un groupe Telegram et découvre récursivement les autres groupes en commun.
+Scrape les membres d'un groupe Telegram et découvre récursivement les autres groupes où ces membres sont actifs.
 
 ## Installation
 
@@ -10,32 +10,44 @@ pip install -r requirements.txt
 
 ## Configuration
 
-1. Allez sur https://my.telegram.org → créez une application pour obtenir `api_id` et `api_hash`
-2. Copiez `.env.example` en `.env` et remplissez vos infos :
+### 1. Obtenir api_id + api_hash
+
+Allez sur https://my.telegram.org → créez une application.
+
+### 2. Générer une StringSession (une seule fois)
+
+La StringSession encode votre session sans exposer le numéro de téléphone dans la config.
+
+```bash
+python generate_session.py
+```
+
+Le script vous demande le numéro + OTP une seule fois, puis affiche une chaîne à copier dans `.env`. Après ça, le numéro n'est plus utilisé.
+
+### 3. Configurer .env
 
 ```bash
 cp .env.example .env
 ```
 
-Configurez au minimum `ACCOUNT_1_*`. Ajoutez plusieurs comptes pour la rotation.
+Remplissez `ACCOUNT_X_API_ID`, `ACCOUNT_X_API_HASH`, `ACCOUNT_X_SESSION`. Ajoutez autant de comptes que nécessaire pour la rotation.
 
-## Première connexion (OTP)
-
-```bash
-python setup_sessions.py
-```
-
-Ce script vous demande le code OTP reçu par SMS/Telegram pour chaque compte.
-
-## Lancer l'app
+## Lancer
 
 ```bash
 python app.py
+# http://localhost:5000
 ```
 
-Ouvrez http://localhost:5000
+## Comment ça trouve les groupes
 
-## Paramètres anti-ban (dans .env)
+Deux méthodes combinées pour chaque membre :
+
+1. **`messages.search` avec `from_id`** : cherche les messages publics de l'utilisateur → retourne directement les groupes où il est actif. Bien plus complet que `get_common_chats` car il ne se limite pas aux groupes en commun avec votre compte.
+
+2. **Cross-référence** : pour chaque groupe déjà connu en base, vérifie via `channels.getParticipant` si l'utilisateur en est membre. Requête légère (1 appel par groupe).
+
+## Paramètres anti-ban (.env)
 
 | Variable | Défaut | Description |
 |---|---|---|
@@ -44,20 +56,12 @@ Ouvrez http://localhost:5000
 | `MAX_MEMBERS_PER_GROUP` | 500 | Membres max scrappés par groupe |
 | `MAX_DEPTH` | 3 | Profondeur de récursion |
 | `REQUESTS_BEFORE_PAUSE` | 30 | Requêtes avant pause longue |
-| `LONG_PAUSE_MIN` | 60 | Durée min de la pause longue (s) |
-| `LONG_PAUSE_MAX` | 180 | Durée max de la pause longue (s) |
-
-## Fonctionnement
-
-1. Vous donnez un `@groupe` seed
-2. Le scraper récupère les membres avec un `@username`
-3. Pour chaque membre, il cherche les groupes en commun (`get_common_chats`)
-4. Il ajoute les nouveaux groupes à la queue et recommence
-5. Les résultats sont exportables en JSON
+| `LONG_PAUSE_MIN` | 60 | Durée min pause longue (s) |
+| `LONG_PAUSE_MAX` | 180 | Durée max pause longue (s) |
 
 ## Notes
 
-- Seuls les membres avec un `@username` public sont collectés
-- `get_common_chats` ne fonctionne qu'avec des utilisateurs qui partagent un groupe avec votre compte
-- Augmentez les délais si vous recevez des `FloodWait`
-- Les sessions sont stockées dans `sessions/` (ignoré par git)
+- Seuls les membres avec `@username` public sont collectés
+- `messages.search` avec `from_id` fonctionne sur les comptes utilisateur (pas les bots)
+- Les sessions sont stockées sous forme de strings dans `.env`, pas dans des fichiers
+- Augmentez les délais si vous recevez des erreurs FloodWait

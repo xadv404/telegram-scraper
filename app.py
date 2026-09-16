@@ -21,9 +21,9 @@ def load_accounts_from_env() -> list[dict]:
     for i in range(1, 10):
         api_id = os.getenv(f"ACCOUNT_{i}_API_ID", "").strip()
         api_hash = os.getenv(f"ACCOUNT_{i}_API_HASH", "").strip()
-        phone = os.getenv(f"ACCOUNT_{i}_PHONE", "").strip()
-        if api_id and api_hash and phone:
-            accounts.append({"api_id": api_id, "api_hash": api_hash, "phone": phone})
+        session = os.getenv(f"ACCOUNT_{i}_SESSION", "").strip()
+        if api_id and api_hash and session:
+            accounts.append({"api_id": api_id, "api_hash": api_hash, "session": session})
     return accounts
 
 
