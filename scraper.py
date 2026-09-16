@@ -21,7 +21,9 @@ from telethon.tl.types import (
     ChannelParticipantBanned,
     ChannelParticipantLeft,
 )
+from telethon.tl.functions.contacts import SearchRequest as ContactsSearchRequest
 from database import Session, Group, Member, GroupMember, ScrapeJob
+from categories import classify_group, get_category_seeds
 
 TGME_RE = re.compile(r"(?:t\.me|telegram\.me)/([A-Za-z0-9_]{5,32})", re.IGNORECASE)
 
@@ -175,12 +177,23 @@ class TelegramScraper:
             client, acc_idx = await self.am.get_client()
             entity = await client.get_entity(username)
 
+            # Récupérer description + classifier
+            description = ""
+            try:
+                from telethon.tl.functions.channels import GetFullChannelRequest
+                full = await client(GetFullChannelRequest(entity))
+                description = full.full_chat.about or ""
+            except Exception:
+                pass
+
             db = Session()
             try:
                 group = db.query(Group).filter_by(username=username).first()
                 if group:
                     group.title = getattr(entity, "title", username)
                     group.member_count = getattr(entity, "participants_count", None)
+                    group.description = description
+                    group.category = classify_group(username, group.title or "", description)
                     db.commit()
             finally:
                 db.close()
@@ -382,6 +395,38 @@ class TelegramScraper:
         return found
 
     # ------------------------------------------------------------------ #
+    #  Découverte par mots-clés (contacts.search)                        #
+    # ------------------------------------------------------------------ #
+
+    async def discover_by_keywords(self, queries: list[str]) -> list[str]:
+        """
+        Utilise contacts.search pour trouver des groupes/canaux publics
+        correspondant à des mots-clés. Ne nécessite aucun contexte préalable.
+        """
+        found = []
+        try:
+            client, acc_idx = await self.am.get_client()
+            for q in queries:
+                if self._stop:
+                    break
+                await self._sleep()
+                try:
+                    res = await client(ContactsSearchRequest(q=q, limit=50))
+                    for chat in res.chats:
+                        uname = getattr(chat, "username", None)
+                        if uname:
+                            found.append(uname)
+                    self._log(f"contacts.search '{q}': {len(res.chats)} résultats")
+                except errors.FloodWaitError as e:
+                    await self.am.mark_flood(acc_idx, e.seconds)
+                    await asyncio.sleep(min(e.seconds, 60))
+                except Exception as e:
+                    logger.debug(f"contacts.search '{q}': {e}")
+        except Exception as e:
+            logger.debug(f"discover_by_keywords: {e}")
+        return list(set(found))
+
+    # ------------------------------------------------------------------ #
     #  Enregistrement d'un nouveau groupe découvert                       #
     # ------------------------------------------------------------------ #
 
@@ -409,13 +454,26 @@ class TelegramScraper:
     #  Boucle principale                                                   #
     # ------------------------------------------------------------------ #
 
-    async def run(self, seed_group: str):
+    async def run(self, seed_group: str, category_seeds: list[str] | None = None):
+        """
+        seed_group : groupe de départ (vide = "" pour démarrer uniquement par catégorie)
+        category_seeds : liste de requêtes contacts.search à lancer au démarrage
+        """
         seed = seed_group.lstrip("@")
-        self._log(f"Démarrage depuis @{seed}")
+        self._log(f"Démarrage{f' depuis @{seed}' if seed else ' par catégories'}")
 
         queue: deque[tuple[str, int]] = deque()
-        queue.append((seed, 0))
+        if seed:
+            queue.append((seed, 0))
         visited_groups: set[str] = set()
+
+        # -- Amorçage par mots-clés (contacts.search) --
+        if category_seeds:
+            self._log(f"Recherche par {len(category_seeds)} requêtes mots-clés...")
+            kw_groups = await self.discover_by_keywords(category_seeds)
+            for g in kw_groups:
+                queue.append((g, 0))
+            self._log(f"{len(kw_groups)} groupes trouvés via mots-clés")
 
         while queue and not self._stop:
             group_username, depth = queue.popleft()

@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from database import Session, Group, Member, GroupMember, ScrapeJob, Account
 from scraper import TelegramScraper
 from user_lookup import lookup_user_groups
+from categories import CATEGORIES, get_category_seeds
 
 load_dotenv()
 
@@ -28,11 +29,11 @@ def load_accounts_from_env() -> list[dict]:
     return accounts
 
 
-def run_scraper_async(scraper: TelegramScraper, seed_group: str):
+def run_scraper_async(scraper: TelegramScraper, seed_group: str, category_seeds=None):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(scraper.run(seed_group))
+        loop.run_until_complete(scraper.run(seed_group, category_seeds=category_seeds))
     finally:
         loop.close()
 
@@ -46,6 +47,12 @@ def index():
         total_groups = db.query(Group).count()
         total_members = db.query(Member).count()
         accounts = load_accounts_from_env()
+
+        # Stats par catégorie
+        from sqlalchemy import func
+        cat_stats = db.query(Group.category, func.count(Group.id)).group_by(Group.category).all()
+        cat_counts = {r[0]: r[1] for r in cat_stats}
+
         return render_template(
             "index.html",
             jobs=jobs,
@@ -53,6 +60,8 @@ def index():
             total_groups=total_groups,
             total_members=total_members,
             accounts_count=len(accounts),
+            categories=CATEGORIES,
+            cat_counts=cat_counts,
         )
     finally:
         db.close()
@@ -61,16 +70,26 @@ def index():
 @app.route("/start", methods=["POST"])
 def start_scrape():
     seed = request.form.get("seed_group", "").strip().lstrip("@")
-    if not seed:
-        return jsonify({"error": "Groupe invalide"}), 400
+    selected_cats = request.form.getlist("categories")  # catégories cochées
 
     accounts = load_accounts_from_env()
     if not accounts:
         return jsonify({"error": "Aucun compte configuré dans .env"}), 400
 
+    if not seed and not selected_cats:
+        return jsonify({"error": "Donnez un groupe ou sélectionnez des catégories"}), 400
+
+    # Construire les requêtes mots-clés pour les catégories sélectionnées
+    all_seeds = get_category_seeds()
+    category_queries = []
+    for cat_id in selected_cats:
+        category_queries.extend(all_seeds.get(cat_id, []))
+
+    seed_label = seed or ("catégories: " + ", ".join(selected_cats))
+
     db = Session()
     try:
-        job = ScrapeJob(seed_group=seed, status="running")
+        job = ScrapeJob(seed_group=seed_label, status="running")
         db.add(job)
         db.commit()
         job_id = job.id
@@ -80,7 +99,11 @@ def start_scrape():
     scraper = TelegramScraper(accounts, job_id)
     active_scrapers[job_id] = scraper
 
-    t = threading.Thread(target=run_scraper_async, args=(scraper, seed), daemon=True)
+    t = threading.Thread(
+        target=run_scraper_async,
+        args=(scraper, seed, category_queries if category_queries else None),
+        daemon=True,
+    )
     t.start()
 
     return redirect(url_for("job_detail", job_id=job_id))
@@ -132,6 +155,31 @@ def stop_job(job_id: int):
         finally:
             db.close()
     return redirect(url_for("job_detail", job_id=job_id))
+
+
+@app.route("/categories")
+def categories_view():
+    db = Session()
+    try:
+        cat_filter = request.args.get("cat")
+        q = db.query(Group)
+        if cat_filter:
+            q = q.filter(Group.category == cat_filter)
+        groups = q.order_by(Group.member_count.desc().nullslast()).all()
+
+        from sqlalchemy import func
+        cat_stats = db.query(Group.category, func.count(Group.id)).group_by(Group.category).all()
+        cat_counts = {r[0]: r[1] for r in cat_stats}
+
+        return render_template(
+            "categories.html",
+            groups=groups,
+            categories=CATEGORIES,
+            cat_counts=cat_counts,
+            cat_filter=cat_filter,
+        )
+    finally:
+        db.close()
 
 
 @app.route("/groups")

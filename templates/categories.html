@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="flex-between" style="margin-bottom:20px">
+  <h1>Catégories</h1>
+  <a href="/export/groups" class="btn btn-primary" style="font-size:12px">⬇ Export JSON</a>
+</div>
+
+<!-- Filtres catégories -->
+<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px">
+  <a href="/categories" class="btn {% if not cat_filter %}btn-primary{% else %}btn-ghost{% endif %}"
+     style="font-size:12px">
+    Tous ({{ cat_counts.values()|sum }})
+  </a>
+  {% for cat_id, cat in categories.items() %}
+  {% set count = cat_counts.get(cat_id, 0) %}
+  <a href="/categories?cat={{ cat_id }}"
+     style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;
+            padding:7px 14px;border-radius:6px;font-size:12px;font-weight:600;
+            border:1px solid {{ cat.color if cat_filter == cat_id else 'var(--border)' }};
+            background:{{ (cat.color + '22') if cat_filter == cat_id else 'var(--surface)' }};
+            color:{{ cat.color if cat_filter == cat_id else 'var(--text)' }}">
+    <span style="width:7px;height:7px;border-radius:50%;background:{{ cat.color }};display:inline-block"></span>
+    {{ cat.label }}
+    <span style="color:var(--muted)">{{ count }}</span>
+  </a>
+  {% endfor %}
+</div>
+
+<!-- Grille catégories (si pas de filtre) -->
+{% if not cat_filter %}
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:24px">
+  {% for cat_id, cat in categories.items() %}
+  {% set count = cat_counts.get(cat_id, 0) %}
+  <a href="/categories?cat={{ cat_id }}" style="text-decoration:none">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;
+                padding:16px;transition:border-color .15s"
+         onmouseover="this.style.borderColor='{{ cat.color }}'"
+         onmouseout="this.style.borderColor='var(--border)'">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="width:10px;height:10px;border-radius:50%;background:{{ cat.color }};flex-shrink:0"></span>
+        <span style="font-weight:700;font-size:14px">{{ cat.label }}</span>
+      </div>
+      <div style="font-size:28px;font-weight:700;color:{{ cat.color }}">{{ count }}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">groupe(s)</div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- Table des groupes -->
+<div class="card">
+  {% if cat_filter %}
+  {% set cat = categories.get(cat_filter, {}) %}
+  <h3 style="display:flex;align-items:center;gap:8px">
+    <span style="width:10px;height:10px;border-radius:50%;background:{{ cat.color }};display:inline-block"></span>
+    {{ cat.label }} — {{ groups|length }} groupe(s)
+  </h3>
+  {% else %}
+  <h3>Tous les groupes ({{ groups|length }})</h3>
+  {% endif %}
+  <table style="margin-top:12px">
+    <thead>
+      <tr><th>Username</th><th>Titre</th><th>Catégorie</th><th>Membres</th><th>Description</th><th>Statut</th></tr>
+    </thead>
+    <tbody>
+    {% for g in groups %}
+    <tr>
+      <td>
+        <a href="/group/{{ g.username }}" style="color:var(--accent)">@{{ g.username }}</a>
+        <a href="https://t.me/{{ g.username }}" target="_blank"
+           style="color:var(--muted);font-size:11px;margin-left:4px">↗</a>
+      </td>
+      <td>{{ g.title or '—' }}</td>
+      <td>
+        {% set cat = categories.get(g.category or 'other', categories.other) %}
+        <span style="color:{{ cat.color }};font-size:11px;font-weight:600">{{ cat.label }}</span>
+      </td>
+      <td>{{ '{:,}'.format(g.member_count) if g.member_count else '—' }}</td>
+      <td style="color:var(--muted);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        {{ g.description or '—' }}
+      </td>
+      <td><span class="badge badge-{{ g.status }}">{{ g.status }}</span></td>
+    </tr>
+    {% endfor %}
+    {% if not groups %}
+    <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:32px">
+      Aucun groupe dans cette catégorie
+    </td></tr>
+    {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

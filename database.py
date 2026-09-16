@@ -25,11 +25,13 @@ class Group(Base):
     id = Column(Integer, primary_key=True)
     username = Column(String, unique=True, nullable=False)
     title = Column(String)
+    description = Column(Text, nullable=True)
     member_count = Column(Integer)
     scraped_at = Column(DateTime)
     depth = Column(Integer, default=0)
     status = Column(String, default="pending")  # pending, scraping, done, error
     error_msg = Column(Text, nullable=True)
+    category = Column(String, default="other")  # ofm, carding, crypto, voip, ...
 
 
 class Member(Base):

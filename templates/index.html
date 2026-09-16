@@ -3,7 +3,7 @@
 
 <div class="flex-between" style="margin-bottom:24px">
   <h1>Dashboard</h1>
-  <span style="color:var(--muted);font-size:13px">{{ accounts_count }} compte(s) configuré(s)</span>
+  <span style="color:var(--muted);font-size:13px">{{ accounts_count }} compte(s)</span>
 </div>
 
 <div class="stats">
@@ -12,18 +12,62 @@
   <div class="stat"><div class="val">{{ accounts_count }}</div><div class="lbl">Comptes API</div></div>
 </div>
 
+<!-- Stats catégories -->
+{% if cat_counts %}
+<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px">
+  {% for cat_id, cat in categories.items() %}
+  {% set count = cat_counts.get(cat_id, 0) %}
+  {% if count > 0 %}
+  <a href="/categories?cat={{ cat_id }}" style="text-decoration:none">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 14px;display:flex;align-items:center;gap:8px">
+      <span style="width:8px;height:8px;border-radius:50%;background:{{ cat.color }};display:inline-block"></span>
+      <span style="font-size:12px;font-weight:600;color:var(--text)">{{ cat.label }}</span>
+      <span style="font-size:12px;color:var(--muted)">{{ count }}</span>
+    </div>
+  </a>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
 <div class="card">
   <h3>Lancer un scraping</h3>
   {% if accounts_count == 0 %}
   <div style="color:var(--red);margin-bottom:12px;font-size:13px">
-    ⚠ Aucun compte configuré. Copiez <code>.env.example</code> en <code>.env</code> et remplissez vos API ID/Hash/Phone.
+    ⚠ Aucun compte configuré. Copiez <code>.env.example</code> en <code>.env</code>.
   </div>
   {% endif %}
-  <form action="/start" method="POST" class="flex">
-    <input type="text" name="seed_group" placeholder="@nom_du_groupe ou nom_du_groupe" style="width:320px">
-    <button type="submit" class="btn btn-primary" {% if accounts_count == 0 %}disabled{% endif %}>
-      ▶ Démarrer
-    </button>
+  <form action="/start" method="POST">
+    <div class="flex" style="margin-bottom:14px">
+      <input type="text" name="seed_group" placeholder="@groupe (optionnel si catégories cochées)"
+             style="width:340px">
+      <button type="submit" class="btn btn-primary" {% if accounts_count == 0 %}disabled{% endif %}>
+        ▶ Démarrer
+      </button>
+    </div>
+
+    <!-- Sélection catégories -->
+    <div>
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">
+        Amorcer par catégorie (contacts.search)
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        {% for cat_id, cat in categories.items() %}
+        {% if cat.seeds %}
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;
+                       background:var(--bg);border:1px solid var(--border);border-radius:6px;
+                       padding:6px 12px;font-size:12px;font-weight:600;user-select:none"
+               id="lbl-{{ cat_id }}">
+          <input type="checkbox" name="categories" value="{{ cat_id }}"
+                 style="display:none" id="chk-{{ cat_id }}"
+                 onchange="toggleCat('{{ cat_id }}','{{ cat.color }}')">
+          <span style="width:7px;height:7px;border-radius:50%;background:{{ cat.color }};display:inline-block"></span>
+          {{ cat.label }}
+        </label>
+        {% endif %}
+        {% endfor %}
+      </div>
+    </div>
   </form>
 </div>
 
@@ -31,15 +75,11 @@
   <h3>Jobs récents</h3>
   {% if jobs %}
   <table>
-    <thead>
-      <tr>
-        <th>Groupe seed</th><th>Statut</th><th>Groupes</th><th>Membres</th><th>Démarré</th><th></th>
-      </tr>
-    </thead>
+    <thead><tr><th>Seed</th><th>Statut</th><th>Groupes</th><th>Membres</th><th>Démarré</th><th></th></tr></thead>
     <tbody>
     {% for job in jobs %}
     <tr>
-      <td><strong>@{{ job.seed_group }}</strong></td>
+      <td><strong>{{ job.seed_group }}</strong></td>
       <td><span class="badge badge-{{ job.status }}">{{ job.status }}</span></td>
       <td>{{ job.groups_found }}</td>
       <td>{{ job.members_found }}</td>
@@ -55,20 +95,37 @@
 </div>
 
 <div class="card">
-  <h3>Derniers groupes découverts</h3>
+  <h3>Derniers groupes</h3>
   <table>
-    <thead><tr><th>Username</th><th>Titre</th><th>Membres</th><th>Profondeur</th><th>Statut</th></tr></thead>
+    <thead><tr><th>Username</th><th>Titre</th><th>Catégorie</th><th>Membres</th><th>Statut</th></tr></thead>
     <tbody>
     {% for g in groups %}
     <tr>
       <td><a href="/group/{{ g.username }}" style="color:var(--accent)">@{{ g.username }}</a></td>
       <td>{{ g.title or '—' }}</td>
+      <td>
+        {% set cat = categories.get(g.category or 'other', categories.other) %}
+        <span style="color:{{ cat.color }};font-size:12px;font-weight:600">{{ cat.label }}</span>
+      </td>
       <td>{{ g.member_count or '—' }}</td>
-      <td><span class="depth-badge">{{ g.depth }}</span></td>
       <td><span class="badge badge-{{ g.status }}">{{ g.status }}</span></td>
     </tr>
     {% endfor %}
     </tbody>
   </table>
 </div>
+
+<script>
+function toggleCat(id, color) {
+  const chk = document.getElementById('chk-' + id);
+  const lbl = document.getElementById('lbl-' + id);
+  if (chk.checked) {
+    lbl.style.borderColor = color;
+    lbl.style.background = color + '22';
+  } else {
+    lbl.style.borderColor = 'var(--border)';
+    lbl.style.background = 'var(--bg)';
+  }
+}
+</script>
 {% endblock %}
