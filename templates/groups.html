@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex-between">
+  <h1>Groupes ({{ groups|length }})</h1>
+  <div class="flex">
+    <a href="?status=done" class="btn btn-ghost" style="font-size:12px">Scrappés</a>
+    <a href="?status=pending" class="btn btn-ghost" style="font-size:12px">En attente</a>
+    <a href="/groups" class="btn btn-ghost" style="font-size:12px">Tous</a>
+    <a href="/export/groups" class="btn btn-primary" style="font-size:12px">⬇ Export JSON</a>
+  </div>
+</div>
+
+<div class="card" style="margin-top:20px">
+  <table>
+    <thead>
+      <tr><th>Username</th><th>Titre</th><th>Membres</th><th>Profondeur</th><th>Statut</th><th>Scrappé le</th></tr>
+    </thead>
+    <tbody>
+    {% for g in groups %}
+    <tr>
+      <td><a href="/group/{{ g.username }}" style="color:var(--accent)">@{{ g.username }}</a></td>
+      <td>{{ g.title or '—' }}</td>
+      <td>{{ g.member_count or '—' }}</td>
+      <td><span class="depth-badge">{{ g.depth }}</span></td>
+      <td><span class="badge badge-{{ g.status }}">{{ g.status }}</span></td>
+      <td style="color:var(--muted)">{{ g.scraped_at.strftime('%d/%m %H:%M') if g.scraped_at else '—' }}</td>
+    </tr>
+    {% endfor %}
+    {% if not groups %}
+    <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:32px">Aucun groupe pour l'instant</td></tr>
+    {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

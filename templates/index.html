@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="flex-between" style="margin-bottom:24px">
+  <h1>Dashboard</h1>
+  <span style="color:var(--muted);font-size:13px">{{ accounts_count }} compte(s) configuré(s)</span>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="val">{{ total_groups }}</div><div class="lbl">Groupes trouvés</div></div>
+  <div class="stat"><div class="val">{{ total_members }}</div><div class="lbl">Membres avec @</div></div>
+  <div class="stat"><div class="val">{{ accounts_count }}</div><div class="lbl">Comptes API</div></div>
+</div>
+
+<div class="card">
+  <h3>Lancer un scraping</h3>
+  {% if accounts_count == 0 %}
+  <div style="color:var(--red);margin-bottom:12px;font-size:13px">
+    ⚠ Aucun compte configuré. Copiez <code>.env.example</code> en <code>.env</code> et remplissez vos API ID/Hash/Phone.
+  </div>
+  {% endif %}
+  <form action="/start" method="POST" class="flex">
+    <input type="text" name="seed_group" placeholder="@nom_du_groupe ou nom_du_groupe" style="width:320px">
+    <button type="submit" class="btn btn-primary" {% if accounts_count == 0 %}disabled{% endif %}>
+      ▶ Démarrer
+    </button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Jobs récents</h3>
+  {% if jobs %}
+  <table>
+    <thead>
+      <tr>
+        <th>Groupe seed</th><th>Statut</th><th>Groupes</th><th>Membres</th><th>Démarré</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for job in jobs %}
+    <tr>
+      <td><strong>@{{ job.seed_group }}</strong></td>
+      <td><span class="badge badge-{{ job.status }}">{{ job.status }}</span></td>
+      <td>{{ job.groups_found }}</td>
+      <td>{{ job.members_found }}</td>
+      <td style="color:var(--muted)">{{ job.started_at.strftime('%d/%m %H:%M') if job.started_at }}</td>
+      <td><a href="/job/{{ job.id }}" class="btn btn-ghost" style="padding:4px 10px;font-size:12px">Détail →</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:var(--muted)">Aucun job lancé pour l'instant.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Derniers groupes découverts</h3>
+  <table>
+    <thead><tr><th>Username</th><th>Titre</th><th>Membres</th><th>Profondeur</th><th>Statut</th></tr></thead>
+    <tbody>
+    {% for g in groups %}
+    <tr>
+      <td><a href="/group/{{ g.username }}" style="color:var(--accent)">@{{ g.username }}</a></td>
+      <td>{{ g.title or '—' }}</td>
+      <td>{{ g.member_count or '—' }}</td>
+      <td><span class="depth-badge">{{ g.depth }}</span></td>
+      <td><span class="badge badge-{{ g.status }}">{{ g.status }}</span></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex-between">
+  <h1>Membres</h1>
+  <a href="/export/members" class="btn btn-primary" style="font-size:12px">⬇ Export JSON</a>
+</div>
+
+<div class="card" style="margin-top:20px">
+  <form method="GET" class="flex" style="margin-bottom:16px">
+    <input type="text" name="q" value="{{ search }}" placeholder="Rechercher un @username..." style="width:300px">
+    <button type="submit" class="btn btn-primary">Chercher</button>
+    {% if search %}<a href="/members" class="btn btn-ghost">Reset</a>{% endif %}
+  </form>
+
+  <table>
+    <thead><tr><th>Username</th><th>Prénom</th><th>Nom</th><th>ID</th><th>Découvert le</th></tr></thead>
+    <tbody>
+    {% for m in members %}
+    <tr>
+      <td><a href="https://t.me/{{ m.username }}" target="_blank" style="color:var(--accent)">@{{ m.username }}</a></td>
+      <td>{{ m.first_name or '—' }}</td>
+      <td>{{ m.last_name or '—' }}</td>
+      <td style="color:var(--muted);font-family:monospace;font-size:11px">{{ m.telegram_id }}</td>
+      <td style="color:var(--muted)">{{ m.discovered_at.strftime('%d/%m %H:%M') if m.discovered_at }}</td>
+    </tr>
+    {% endfor %}
+    {% if not members %}
+    <tr><td colspan="5" style="text-align:center;color:var(--muted);padding:32px">Aucun membre trouvé</td></tr>
+    {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

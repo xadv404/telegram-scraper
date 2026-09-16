@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="flex-between">
+  <div>
+    <h1>Job #{{ job.id }} — @{{ job.seed_group }}</h1>
+    <span class="badge badge-{{ job.status }}" style="margin-top:6px">{{ job.status }}</span>
+  </div>
+  <div class="flex">
+    {% if job.status == 'running' %}
+    <form action="/job/{{ job.id }}/stop" method="POST">
+      <button class="btn btn-danger">⏹ Arrêter</button>
+    </form>
+    {% endif %}
+    <a href="/" class="btn btn-ghost">← Retour</a>
+  </div>
+</div>
+
+<div class="stats" style="margin-top:20px">
+  <div class="stat"><div class="val" id="groups_found">{{ job.groups_found }}</div><div class="lbl">Groupes trouvés</div></div>
+  <div class="stat"><div class="val" id="members_found">{{ job.members_found }}</div><div class="lbl">Membres trouvés</div></div>
+  <div class="stat"><div class="val" id="current_group" style="font-size:14px">{{ job.current_group or '—' }}</div><div class="lbl">Groupe en cours</div></div>
+</div>
+
+<div class="card" style="margin-top:20px">
+  <h3>Logs en temps réel</h3>
+  <div class="log-box" id="log-box">{{ job.log or 'En attente...' }}</div>
+</div>
+
+<div class="card">
+  <h3>Groupes découverts</h3>
+  <table>
+    <thead><tr><th>Username</th><th>Titre</th><th>Membres</th><th>Profondeur</th><th>Statut</th></tr></thead>
+    <tbody>
+    {% for g in groups %}
+    <tr>
+      <td><a href="/group/{{ g.username }}" style="color:var(--accent)">@{{ g.username }}</a></td>
+      <td>{{ g.title or '—' }}</td>
+      <td>{{ g.member_count or '—' }}</td>
+      <td><span class="depth-badge">{{ g.depth }}</span></td>
+      <td><span class="badge badge-{{ g.status }}">{{ g.status }}</span></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if job.status == 'running' %}
+<script>
+  const jobId = {{ job.id }};
+  function poll() {
+    fetch(`/job/${jobId}/status`)
+      .then(r => r.json())
+      .then(d => {
+        document.getElementById('groups_found').textContent = d.groups_found;
+        document.getElementById('members_found').textContent = d.members_found;
+        document.getElementById('current_group').textContent = d.current_group || '—';
+        const box = document.getElementById('log-box');
+        box.textContent = d.log.join('\n');
+        box.scrollTop = box.scrollHeight;
+        if (d.status === 'running') setTimeout(poll, 2000);
+        else location.reload();
+      })
+      .catch(() => setTimeout(poll, 5000));
+  }
+  setTimeout(poll, 2000);
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex-between">
+  <div>
+    <h1>@{{ group.username }}</h1>
+    {% if group.title %}<p style="color:var(--muted);margin-top:4px">{{ group.title }}</p>{% endif %}
+  </div>
+  <a href="/groups" class="btn btn-ghost">← Retour</a>
+</div>
+
+<div class="stats" style="margin-top:20px">
+  <div class="stat"><div class="val">{{ members|length }}</div><div class="lbl">Membres avec @</div></div>
+  <div class="stat"><div class="val">{{ group.member_count or '—' }}</div><div class="lbl">Membres total</div></div>
+  <div class="stat"><div class="val">{{ group.depth }}</div><div class="lbl">Profondeur</div></div>
+</div>
+
+<div class="card" style="margin-top:20px">
+  <h3>Membres (@username)</h3>
+  <table>
+    <thead><tr><th>Username</th><th>Prénom</th><th>Nom</th><th>ID Telegram</th></tr></thead>
+    <tbody>
+    {% for m in members %}
+    <tr>
+      <td><a href="https://t.me/{{ m.username }}" target="_blank" style="color:var(--accent)">@{{ m.username }}</a></td>
+      <td>{{ m.first_name or '—' }}</td>
+      <td>{{ m.last_name or '—' }}</td>
+      <td style="color:var(--muted);font-family:monospace">{{ m.telegram_id }}</td>
+    </tr>
+    {% endfor %}
+    {% if not members %}
+    <tr><td colspan="4" style="text-align:center;color:var(--muted);padding:32px">Aucun membre avec @ trouvé</td></tr>
+    {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
