@@ -3,10 +3,11 @@ import asyncio
 import threading
 import json
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify, redirect, url_for, Response, stream_with_context
 from dotenv import load_dotenv
 from database import Session, Group, Member, GroupMember, ScrapeJob, Account
 from scraper import TelegramScraper
+from user_lookup import lookup_user_groups
 
 load_dotenv()
 
@@ -203,6 +204,75 @@ def export_groups():
         )
     finally:
         db.close()
+
+
+@app.route("/lookup")
+def lookup_page():
+    return render_template("lookup.html")
+
+
+@app.route("/lookup/run")
+def lookup_run():
+    """
+    Endpoint SSE (Server-Sent Events) : stream les logs en temps réel
+    puis envoie le résultat JSON final.
+    """
+    username = request.args.get("username", "").strip().lstrip("@")
+    if not username:
+        return jsonify({"error": "username manquant"}), 400
+
+    accounts = load_accounts_from_env()
+    if not accounts:
+        return jsonify({"error": "Aucun compte configuré"}), 400
+
+    def generate():
+        log_lines = []
+        result_holder = {}
+
+        def on_progress(msg: str):
+            log_lines.append(msg)
+            yield f"data: {json.dumps({'type': 'log', 'msg': msg})}\n\n"
+
+        # On ne peut pas yield depuis un callback ; on utilise une queue
+        import queue as qmod
+        q = qmod.Queue()
+
+        def cb(msg):
+            q.put(msg)
+
+        def run():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                res = loop.run_until_complete(
+                    lookup_user_groups(username, accounts, progress_cb=cb)
+                )
+                result_holder["data"] = res
+            except Exception as e:
+                result_holder["error"] = str(e)
+            finally:
+                q.put(None)  # sentinel
+                loop.close()
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+
+        while True:
+            msg = q.get()
+            if msg is None:
+                break
+            yield f"data: {json.dumps({'type': 'log', 'msg': msg})}\n\n"
+
+        if "error" in result_holder:
+            yield f"data: {json.dumps({'type': 'error', 'msg': result_holder['error']})}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'result', 'data': result_holder.get('data', {})})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.route("/export/members")

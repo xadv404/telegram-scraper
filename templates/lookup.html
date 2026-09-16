@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="max-width:720px;margin:0 auto">
+
+  <div style="margin-bottom:24px">
+    <h1>Lookup utilisateur</h1>
+    <p style="color:var(--muted);margin-top:6px;font-size:13px">
+      Trouve directement les groupes publics où se trouve un utilisateur Telegram.
+    </p>
+  </div>
+
+  <div class="card">
+    <div class="flex" style="gap:10px">
+      <input type="text" id="inp-username" placeholder="@username ou username"
+             style="flex:1;font-size:15px" autocomplete="off">
+      <button id="btn-search" class="btn btn-primary" style="min-width:110px">
+        Rechercher
+      </button>
+    </div>
+    <p style="color:var(--muted);font-size:12px;margin-top:10px">
+      Méthodes : searchGlobal · messages.search from_id · bio parsing · vérification getParticipant
+    </p>
+  </div>
+
+  <!-- Profil utilisateur -->
+  <div id="user-card" class="card" style="display:none">
+    <h3>Profil</h3>
+    <div style="display:flex;gap:16px;align-items:flex-start">
+      <div style="flex:1">
+        <div style="font-size:16px;font-weight:700" id="u-name">—</div>
+        <div style="color:var(--muted);font-size:13px;margin-top:2px" id="u-username">—</div>
+        <div style="color:var(--muted);font-size:12px;margin-top:8px;font-family:monospace" id="u-id">—</div>
+        <div style="color:var(--text);font-size:13px;margin-top:8px;line-height:1.5" id="u-bio">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Logs en temps réel -->
+  <div id="log-card" class="card" style="display:none">
+    <h3>Progression</h3>
+    <div class="log-box" id="log-box" style="max-height:200px"></div>
+  </div>
+
+  <!-- Résultats -->
+  <div id="results-card" class="card" style="display:none">
+    <div class="flex-between" style="margin-bottom:12px">
+      <h3 style="margin:0">Groupes trouvés (<span id="results-count">0</span>)</h3>
+      <button id="btn-export" class="btn btn-ghost" style="font-size:12px;display:none">
+        ⬇ Copier JSON
+      </button>
+    </div>
+    <table id="results-table">
+      <thead>
+        <tr>
+          <th>Groupe</th>
+          <th>Titre</th>
+          <th>Membres</th>
+          <th>Source</th>
+          <th>Statut</th>
+        </tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+const btn = document.getElementById('btn-search');
+const inp = document.getElementById('inp-username');
+let currentUsername = '';
+let allGroups = [];
+
+function reset() {
+  document.getElementById('log-box').textContent = '';
+  document.getElementById('results-body').innerHTML = '';
+  document.getElementById('results-count').textContent = '0';
+  document.getElementById('log-card').style.display = 'none';
+  document.getElementById('results-card').style.display = 'none';
+  document.getElementById('user-card').style.display = 'none';
+  document.getElementById('btn-export').style.display = 'none';
+  allGroups = [];
+}
+
+function addLog(msg) {
+  const box = document.getElementById('log-box');
+  box.textContent += msg + '\n';
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderUser(u) {
+  document.getElementById('u-name').textContent =
+    [u.first_name, u.last_name].filter(Boolean).join(' ') || '—';
+  document.getElementById('u-username').textContent = '@' + u.username;
+  document.getElementById('u-id').textContent = 'ID: ' + u.telegram_id;
+  document.getElementById('u-bio').textContent = u.bio || '(pas de bio)';
+  document.getElementById('user-card').style.display = '';
+}
+
+function sourceColor(s) {
+  const m = {
+    'searchGlobal': '#5b6af0',
+    'messages.search': '#22c55e',
+    'bio': '#f59e0b',
+  };
+  return m[s] || '#64748b';
+}
+
+function renderGroups(groups) {
+  const tbody = document.getElementById('results-body');
+  tbody.innerHTML = '';
+  document.getElementById('results-count').textContent = groups.length;
+
+  groups.forEach(g => {
+    const tr = document.createElement('tr');
+    const verified = g.verified === true;
+    const verifiedBadge = verified
+      ? '<span class="badge badge-done">✓ confirmé</span>'
+      : '<span class="badge badge-pending">non vérifié</span>';
+
+    tr.innerHTML = `
+      <td><a href="https://t.me/${g.username}" target="_blank" style="color:var(--accent)">@${g.username}</a></td>
+      <td>${g.title || '—'}</td>
+      <td>${g.member_count != null ? g.member_count.toLocaleString() : '—'}</td>
+      <td><span style="color:${sourceColor(g.source)};font-size:12px">${g.source}</span></td>
+      <td>${verifiedBadge}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById('results-card').style.display = '';
+  document.getElementById('btn-export').style.display = '';
+  allGroups = groups;
+}
+
+btn.addEventListener('click', () => {
+  const raw = inp.value.trim().replace(/^@/, '');
+  if (!raw) return;
+  currentUsername = raw;
+  reset();
+
+  document.getElementById('log-card').style.display = '';
+  btn.disabled = true;
+  btn.textContent = 'Recherche...';
+
+  const es = new EventSource(`/lookup/run?username=${encodeURIComponent(raw)}`);
+
+  es.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'log') {
+      addLog(msg.msg);
+    } else if (msg.type === 'result') {
+      const data = msg.data;
+      if (data.user) renderUser(data.user);
+      renderGroups(data.groups || []);
+      es.close();
+      btn.disabled = false;
+      btn.textContent = 'Rechercher';
+    } else if (msg.type === 'error') {
+      addLog('❌ ' + msg.msg);
+      es.close();
+      btn.disabled = false;
+      btn.textContent = 'Rechercher';
+    }
+  };
+
+  es.onerror = () => {
+    addLog('Connexion perdue.');
+    es.close();
+    btn.disabled = false;
+    btn.textContent = 'Rechercher';
+  };
+});
+
+inp.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
+
+document.getElementById('btn-export').addEventListener('click', () => {
+  const json = JSON.stringify(allGroups, null, 2);
+  navigator.clipboard.writeText(json).then(() => {
+    document.getElementById('btn-export').textContent = '✓ Copié !';
+    setTimeout(() => { document.getElementById('btn-export').textContent = '⬇ Copier JSON'; }, 2000);
+  });
+});
+</script>
+{% endblock %}
