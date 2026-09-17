@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex-between">
+  <h1>Export membres d'un groupe</h1>
+</div>
+
+<div class="card">
+  <h3>Groupe ou communauté cible</h3>
+  <div class="flex" style="gap:12px; flex-wrap:wrap;">
+    <input type="text" id="groupInput" placeholder="@username ou username" style="flex:1; min-width:220px;" />
+    <label class="flex" style="gap:6px; cursor:pointer;">
+      <input type="checkbox" id="publicOnly" checked />
+      <span style="font-size:13px;">@username uniquement</span>
+    </label>
+    <button class="btn btn-primary" onclick="startExport()">Extraire les membres</button>
+  </div>
+</div>
+
+<div id="statusCard" class="card" style="display:none;">
+  <h3>Progression</h3>
+  <div id="groupInfo" style="margin-bottom:12px; font-size:13px; color:#a78bfa;"></div>
+  <div class="log-box" id="logBox"></div>
+</div>
+
+<div id="resultCard" class="card" style="display:none;">
+  <div class="flex-between">
+    <h3 id="resultTitle">Membres trouvés</h3>
+    <div class="flex" style="gap:8px;">
+      <button class="btn btn-ghost" onclick="copyUsernames()">Copier @usernames</button>
+      <button class="btn btn-ghost" onclick="downloadJSON()">Télécharger JSON</button>
+      <button class="btn btn-ghost" onclick="downloadCSV()">Télécharger CSV</button>
+    </div>
+  </div>
+
+  <div class="stats" id="resultStats" style="margin-top:12px;"></div>
+
+  <input type="text" id="searchMembers" placeholder="Filtrer par @username ou nom..."
+    style="width:100%; margin-bottom:12px;"
+    oninput="filterTable()" />
+
+  <div style="overflow-x:auto;">
+    <table id="membersTable">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>@username</th>
+          <th>Prénom</th>
+          <th>Nom</th>
+          <th>ID Telegram</th>
+        </tr>
+      </thead>
+      <tbody id="membersBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let allMembers = [];
+let exportData = null;
+
+function startExport() {
+  const raw = document.getElementById('groupInput').value.trim().replace(/^@/, '');
+  if (!raw) { alert('Entrez un @username'); return; }
+  const publicOnly = document.getElementById('publicOnly').checked;
+
+  document.getElementById('statusCard').style.display = '';
+  document.getElementById('resultCard').style.display = 'none';
+  document.getElementById('logBox').textContent = '';
+  document.getElementById('groupInfo').textContent = '';
+  allMembers = [];
+
+  const url = `/export-members/run?username=${encodeURIComponent(raw)}&public_only=${publicOnly}`;
+  const es = new EventSource(url);
+
+  es.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    if (d.type === 'log') {
+      const lb = document.getElementById('logBox');
+      lb.textContent += d.msg + '\n';
+      lb.scrollTop = lb.scrollHeight;
+    } else if (d.type === 'group_info') {
+      const gi = document.getElementById('groupInfo');
+      const badge = d.is_community ? '🏘️ Communauté' : '👥 Groupe';
+      gi.textContent = `${badge} — ${d.title} (@${d.username}) — ~${d.member_count ?? '?'} membres`;
+    } else if (d.type === 'result') {
+      es.close();
+      exportData = d.data;
+      allMembers = d.data.members;
+      renderResults(d.data);
+    } else if (d.type === 'error') {
+      es.close();
+      const lb = document.getElementById('logBox');
+      lb.textContent += `\n❌ Erreur : ${d.msg}\n`;
+    }
+  };
+  es.onerror = () => { es.close(); };
+}
+
+function renderResults(data) {
+  document.getElementById('resultCard').style.display = '';
+
+  const publicCount = data.total_public;
+  document.getElementById('resultTitle').textContent =
+    `Membres trouvés — ${data.total} total, ${publicCount} avec @username`;
+
+  document.getElementById('resultStats').innerHTML = `
+    <div class="stat"><div class="val">${data.total}</div><div class="lbl">Membres total</div></div>
+    <div class="stat"><div class="val">${publicCount}</div><div class="lbl">Avec @username</div></div>
+    <div class="stat"><div class="val">${data.total - publicCount}</div><div class="lbl">Sans @username</div></div>
+  `;
+
+  renderTable(allMembers);
+}
+
+function renderTable(members) {
+  const tbody = document.getElementById('membersBody');
+  tbody.innerHTML = members.map((m, i) => `
+    <tr>
+      <td style="color:var(--muted)">${i + 1}</td>
+      <td>${m.username ? `<a href="https://t.me/${m.username}" target="_blank" style="color:var(--accent)">@${m.username}</a>` : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${escHtml(m.first_name)}</td>
+      <td>${escHtml(m.last_name)}</td>
+      <td style="color:var(--muted); font-family:monospace">${m.telegram_id}</td>
+    </tr>
+  `).join('');
+}
+
+function filterTable() {
+  const q = document.getElementById('searchMembers').value.toLowerCase();
+  const filtered = allMembers.filter(m =>
+    (m.username && m.username.toLowerCase().includes(q)) ||
+    (m.first_name && m.first_name.toLowerCase().includes(q)) ||
+    (m.last_name && m.last_name.toLowerCase().includes(q))
+  );
+  renderTable(filtered);
+}
+
+function copyUsernames() {
+  const usernames = allMembers.filter(m => m.username).map(m => '@' + m.username);
+  navigator.clipboard.writeText(usernames.join('\n'));
+  alert(`${usernames.length} @usernames copiés dans le presse-papiers`);
+}
+
+function downloadJSON() {
+  if (!exportData) return;
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `membres_${exportData.group.username}.json`;
+  a.click();
+}
+
+function downloadCSV() {
+  if (!allMembers.length) return;
+  const rows = [['telegram_id', 'username', 'first_name', 'last_name']];
+  allMembers.forEach(m => rows.push([m.telegram_id, m.username, m.first_name, m.last_name]));
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `membres_${exportData.group.username}.csv`;
+  a.click();
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+{% endblock %}
