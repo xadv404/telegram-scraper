@@ -1,18 +1,21 @@
 """
-Export de tous les membres @public d'un groupe ou d'une communauté Telegram.
+Export des membres ou des expéditeurs d'un groupe / communauté Telegram.
 
-Fonctionne avec :
-  - Supergroupes classiques
-  - Communautés (forum=True, topics)
-  - Groupes basiques (Chat)
-
-Retourne la liste des membres ayant un @username public.
+Deux modes :
+  - export_group_members()   : tous les membres inscrits (GetParticipants)
+  - list_forum_topics()      : liste les topics d'une communauté
+  - export_topic_senders()   : @users ayant posté dans un topic (GetReplies)
 """
 import asyncio
 import logging
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
-from telethon.tl.functions.channels import GetParticipantsRequest, GetFullChannelRequest
+from telethon.tl.functions.channels import (
+    GetParticipantsRequest,
+    GetFullChannelRequest,
+    GetForumTopicsRequest,
+)
+from telethon.tl.functions.messages import GetRepliesRequest
 from telethon.tl.types import (
     ChannelParticipantsSearch,
     Channel,
@@ -166,6 +169,199 @@ async def export_group_members(
                 "member_count": member_count,
                 "is_community": is_community,
             },
+            "members": members,
+            "public_only": public_members,
+            "total": len(members),
+            "total_public": len(public_members),
+            "errors": errors_list,
+        }
+
+    finally:
+        await client.disconnect()
+
+
+# ------------------------------------------------------------------ #
+#  Liste les topics d'une communauté (forum)                          #
+# ------------------------------------------------------------------ #
+
+async def list_forum_topics(username: str, accounts_config: list[dict]) -> dict:
+    """
+    Retourne la liste des topics d'une communauté Telegram.
+    {
+      "group": { username, title, is_community },
+      "topics": [ { id, title, top_msg_id, unread_count } ]
+    }
+    """
+    acc = accounts_config[0]
+    client = TelegramClient(
+        StringSession(acc["session"]),
+        int(acc["api_id"]),
+        acc["api_hash"],
+    )
+    await client.connect()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Session invalide")
+
+    try:
+        target = username.lstrip("@")
+        entity = await client.get_entity(target)
+
+        is_community = getattr(entity, "forum", False)
+        title = getattr(entity, "title", target)
+
+        topics_out = []
+        if is_community:
+            offset_date = 0
+            offset_id = 0
+            offset_topic = 0
+
+            while True:
+                res = await client(GetForumTopicsRequest(
+                    channel=entity,
+                    q="",
+                    offset_date=offset_date,
+                    offset_id=offset_id,
+                    offset_topic=offset_topic,
+                    limit=100,
+                ))
+                for t in res.topics:
+                    topics_out.append({
+                        "id": t.id,
+                        "title": t.title,
+                        "top_msg_id": t.top_message,
+                        "unread_count": getattr(t, "unread_count", 0),
+                    })
+                if len(res.topics) < 100:
+                    break
+                last = res.topics[-1]
+                offset_topic = last.id
+                offset_id = last.top_message
+                await asyncio.sleep(1)
+
+        return {
+            "group": {"username": target, "title": title, "is_community": is_community},
+            "topics": topics_out,
+        }
+    finally:
+        await client.disconnect()
+
+
+# ------------------------------------------------------------------ #
+#  Export des expéditeurs uniques d'un topic                          #
+# ------------------------------------------------------------------ #
+
+async def export_topic_senders(
+    username: str,
+    topic_msg_id: int,
+    topic_title: str,
+    accounts_config: list[dict],
+    progress_cb=None,
+) -> dict:
+    """
+    Récupère tous les utilisateurs ayant posté dans un topic (thread) de forum.
+    Utilise GetRepliesRequest pour paginer les messages du topic.
+
+    Retourne :
+    {
+      "group": { username, title, is_community },
+      "topic": { id, title },
+      "members": [ { telegram_id, username, first_name, last_name } ],
+      "total": int,
+      "total_public": int,
+      "errors": [ ... ]
+    }
+    """
+
+    def log(msg: str):
+        logger.info(msg)
+        if progress_cb:
+            progress_cb(msg)
+
+    errors_list: list[str] = []
+    seen_ids: set[str] = {}
+    members: list[dict] = []
+    seen_ids = set()
+
+    acc = accounts_config[0]
+    client = TelegramClient(
+        StringSession(acc["session"]),
+        int(acc["api_id"]),
+        acc["api_hash"],
+        request_retries=3,
+        connection_retries=3,
+    )
+    await client.connect()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Session invalide")
+
+    try:
+        target = username.lstrip("@")
+        entity = await client.get_entity(target)
+        title = getattr(entity, "title", target)
+
+        log(f"Topic « {topic_title} » (id={topic_msg_id}) dans @{target}...")
+        log("Récupération des messages en cours...")
+
+        offset_id = 0
+        batch_size = 100
+
+        while True:
+            try:
+                res = await client(GetRepliesRequest(
+                    peer=entity,
+                    msg_id=topic_msg_id,
+                    offset_id=offset_id,
+                    offset_date=0,
+                    add_offset=0,
+                    limit=batch_size,
+                    max_id=0,
+                    min_id=0,
+                    hash=0,
+                ))
+            except errors.FloodWaitError as e:
+                log(f"FloodWait {e.seconds}s, pause...")
+                await asyncio.sleep(min(e.seconds, 120))
+                continue
+            except Exception as e:
+                errors_list.append(str(e))
+                break
+
+            if not res.messages:
+                break
+
+            for msg in res.messages:
+                sender = getattr(msg, "from_id", None)
+                if sender is None:
+                    continue
+                uid = str(getattr(sender, "user_id", None) or getattr(sender, "channel_id", None) or "")
+                if not uid or uid in seen_ids:
+                    continue
+                seen_ids.add(uid)
+
+                # Résoudre le nom depuis res.users
+                user_obj = next((u for u in res.users if str(u.id) == uid), None)
+                members.append({
+                    "telegram_id": uid,
+                    "username": getattr(user_obj, "username", "") or "" if user_obj else "",
+                    "first_name": getattr(user_obj, "first_name", "") or "" if user_obj else "",
+                    "last_name": getattr(user_obj, "last_name", "") or "" if user_obj else "",
+                })
+
+            public_count = sum(1 for m in members if m["username"])
+            log(f"  {len(res.messages)} messages traités — {len(members)} expéditeurs uniques ({public_count} avec @username)...")
+
+            if len(res.messages) < batch_size:
+                break
+
+            offset_id = res.messages[-1].id
+            await asyncio.sleep(1.5)
+
+        public_members = [m for m in members if m["username"]]
+        log(f"Terminé : {len(members)} expéditeurs uniques, {len(public_members)} avec @username")
+
+        return {
+            "group": {"username": target, "title": title, "is_community": True},
+            "topic": {"id": topic_msg_id, "title": topic_title},
             "members": members,
             "public_only": public_members,
             "total": len(members),

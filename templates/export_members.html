@@ -1,52 +1,83 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="flex-between">
-  <h1>Export membres d'un groupe</h1>
+  <h1>Export membres</h1>
 </div>
 
+<!-- Étape 1 : saisie du groupe -->
 <div class="card">
   <h3>Groupe ou communauté cible</h3>
-  <div class="flex" style="gap:12px; flex-wrap:wrap;">
+  <div class="flex" style="flex-wrap:wrap; gap:12px;">
     <input type="text" id="groupInput" placeholder="@username ou username" style="flex:1; min-width:220px;" />
-    <label class="flex" style="gap:6px; cursor:pointer;">
-      <input type="checkbox" id="publicOnly" checked />
-      <span style="font-size:13px;">@username uniquement</span>
-    </label>
-    <button class="btn btn-primary" onclick="startExport()">Extraire les membres</button>
+    <button class="btn btn-ghost" onclick="loadGroup()">Charger</button>
   </div>
 </div>
 
+<!-- Étape 2 : choix du mode (affiché après chargement) -->
+<div id="modeCard" class="card" style="display:none;">
+  <h3>Mode d'extraction</h3>
+  <div id="groupBanner" style="margin-bottom:16px; font-size:13px; color:#a78bfa;"></div>
+
+  <div style="display:flex; flex-direction:column; gap:12px;">
+
+    <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; padding:12px; border:1px solid var(--border); border-radius:8px;" id="optMembers">
+      <input type="radio" name="mode" value="members" checked onchange="onModeChange()" style="margin-top:2px;" />
+      <div>
+        <div style="font-weight:600; font-size:13px;">👥 Membres inscrits</div>
+        <div style="font-size:12px; color:var(--muted); margin-top:2px;">Tous les membres du groupe/communauté via GetParticipants. Requiert parfois les droits admin.</div>
+      </div>
+    </label>
+
+    <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; padding:12px; border:1px solid var(--border); border-radius:8px;" id="optTopic">
+      <input type="radio" name="mode" value="topic" onchange="onModeChange()" style="margin-top:2px;" />
+      <div style="flex:1;">
+        <div style="font-weight:600; font-size:13px;">💬 Expéditeurs d'un topic</div>
+        <div style="font-size:12px; color:var(--muted); margin-top:2px;">Récupère tous les @users qui ont posté dans un topic du forum. Ne nécessite aucun droit spécial.</div>
+        <div id="topicSelector" style="display:none; margin-top:10px;">
+          <select id="topicSelect" style="width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px; border-radius:6px; font-size:13px;">
+            <option value="">— choisir un topic —</option>
+          </select>
+          <div id="topicLoading" style="font-size:12px; color:var(--muted); margin-top:6px; display:none;">Chargement des topics...</div>
+        </div>
+      </div>
+    </label>
+
+  </div>
+
+  <div style="margin-top:16px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+    <button class="btn btn-primary" onclick="startExport()">Extraire</button>
+    <label class="flex" style="gap:6px; cursor:pointer; font-size:13px;">
+      <input type="checkbox" id="publicOnly" checked />
+      Afficher @username uniquement dans le tableau
+    </label>
+  </div>
+</div>
+
+<!-- Progression -->
 <div id="statusCard" class="card" style="display:none;">
   <h3>Progression</h3>
-  <div id="groupInfo" style="margin-bottom:12px; font-size:13px; color:#a78bfa;"></div>
   <div class="log-box" id="logBox"></div>
 </div>
 
+<!-- Résultats -->
 <div id="resultCard" class="card" style="display:none;">
   <div class="flex-between">
-    <h3 id="resultTitle">Membres trouvés</h3>
+    <h3 id="resultTitle">Résultats</h3>
     <div class="flex" style="gap:8px;">
       <button class="btn btn-ghost" onclick="copyUsernames()">Copier @usernames</button>
-      <button class="btn btn-ghost" onclick="downloadJSON()">Télécharger JSON</button>
-      <button class="btn btn-ghost" onclick="downloadCSV()">Télécharger CSV</button>
+      <button class="btn btn-ghost" onclick="downloadJSON()">JSON</button>
+      <button class="btn btn-ghost" onclick="downloadCSV()">CSV</button>
     </div>
   </div>
-
   <div class="stats" id="resultStats" style="margin-top:12px;"></div>
-
   <input type="text" id="searchMembers" placeholder="Filtrer par @username ou nom..."
-    style="width:100%; margin-bottom:12px;"
+    style="width:100%; margin:12px 0;"
     oninput="filterTable()" />
-
   <div style="overflow-x:auto;">
     <table id="membersTable">
       <thead>
         <tr>
-          <th>#</th>
-          <th>@username</th>
-          <th>Prénom</th>
-          <th>Nom</th>
-          <th>ID Telegram</th>
+          <th>#</th><th>@username</th><th>Prénom</th><th>Nom</th><th>ID Telegram</th>
         </tr>
       </thead>
       <tbody id="membersBody"></tbody>
@@ -55,33 +86,95 @@
 </div>
 
 <script>
+let groupInfo = null;
 let allMembers = [];
 let exportData = null;
 
-function startExport() {
+// ── Étape 1 : charger le groupe ──────────────────────────────────────────────
+
+async function loadGroup() {
   const raw = document.getElementById('groupInput').value.trim().replace(/^@/, '');
   if (!raw) { alert('Entrez un @username'); return; }
-  const publicOnly = document.getElementById('publicOnly').checked;
+
+  const modeCard = document.getElementById('modeCard');
+  modeCard.style.display = 'none';
+  document.getElementById('groupBanner').textContent = 'Chargement...';
+
+  try {
+    const res = await fetch(`/export-members/topics?username=${encodeURIComponent(raw)}`);
+    const data = await res.json();
+    if (data.error) { alert('Erreur : ' + data.error); return; }
+
+    groupInfo = data.group;
+    const badge = data.group.is_community ? '🏘️ Communauté' : '👥 Groupe';
+    document.getElementById('groupBanner').textContent =
+      `${badge} — ${data.group.title} (@${data.group.username})`;
+
+    // Option topic disponible seulement pour les communautés
+    const optTopic = document.getElementById('optTopic');
+    const topicRadio = optTopic.querySelector('input[type=radio]');
+
+    if (data.group.is_community && data.topics.length > 0) {
+      optTopic.style.opacity = '1';
+      topicRadio.disabled = false;
+      // Remplir le select
+      const sel = document.getElementById('topicSelect');
+      sel.innerHTML = '<option value="">— choisir un topic —</option>';
+      data.topics.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.top_msg_id;
+        opt.dataset.title = t.title;
+        opt.textContent = `${t.title}${t.unread_count ? ' (' + t.unread_count + ' non lus)' : ''}`;
+        sel.appendChild(opt);
+      });
+    } else {
+      optTopic.style.opacity = '0.4';
+      topicRadio.disabled = true;
+      document.querySelector('input[name=mode][value=members]').checked = true;
+      onModeChange();
+    }
+
+    modeCard.style.display = '';
+  } catch (e) {
+    alert('Erreur réseau : ' + e);
+  }
+}
+
+function onModeChange() {
+  const mode = document.querySelector('input[name=mode]:checked').value;
+  document.getElementById('topicSelector').style.display = mode === 'topic' ? '' : 'none';
+}
+
+// ── Étape 2 : lancer l'extraction ───────────────────────────────────────────
+
+function startExport() {
+  if (!groupInfo) return;
+  const mode = document.querySelector('input[name=mode]:checked').value;
+  const username = groupInfo.username;
 
   document.getElementById('statusCard').style.display = '';
   document.getElementById('resultCard').style.display = 'none';
   document.getElementById('logBox').textContent = '';
-  document.getElementById('groupInfo').textContent = '';
   allMembers = [];
 
-  const url = `/export-members/run?username=${encodeURIComponent(raw)}&public_only=${publicOnly}`;
-  const es = new EventSource(url);
+  let url;
+  if (mode === 'members') {
+    url = `/export-members/run?username=${encodeURIComponent(username)}`;
+  } else {
+    const sel = document.getElementById('topicSelect');
+    const topicId = sel.value;
+    const topicTitle = sel.selectedOptions[0]?.dataset.title || '';
+    if (!topicId) { alert('Choisissez un topic'); return; }
+    url = `/export-members/run-topic?username=${encodeURIComponent(username)}&topic_id=${topicId}&topic_title=${encodeURIComponent(topicTitle)}`;
+  }
 
+  const es = new EventSource(url);
   es.onmessage = (e) => {
     const d = JSON.parse(e.data);
     if (d.type === 'log') {
       const lb = document.getElementById('logBox');
       lb.textContent += d.msg + '\n';
       lb.scrollTop = lb.scrollHeight;
-    } else if (d.type === 'group_info') {
-      const gi = document.getElementById('groupInfo');
-      const badge = d.is_community ? '🏘️ Communauté' : '👥 Groupe';
-      gi.textContent = `${badge} — ${d.title} (@${d.username}) — ~${d.member_count ?? '?'} membres`;
     } else if (d.type === 'result') {
       es.close();
       exportData = d.data;
@@ -93,23 +186,27 @@ function startExport() {
       lb.textContent += `\n❌ Erreur : ${d.msg}\n`;
     }
   };
-  es.onerror = () => { es.close(); };
+  es.onerror = () => es.close();
 }
 
+// ── Affichage des résultats ──────────────────────────────────────────────────
+
 function renderResults(data) {
+  const publicOnly = document.getElementById('publicOnly').checked;
   document.getElementById('resultCard').style.display = '';
 
-  const publicCount = data.total_public;
+  const modeLabel = data.topic ? `topic « ${data.topic.title} »` : 'membres inscrits';
   document.getElementById('resultTitle').textContent =
-    `Membres trouvés — ${data.total} total, ${publicCount} avec @username`;
+    `${data.total} résultats — ${data.total_public} avec @username (${modeLabel})`;
 
   document.getElementById('resultStats').innerHTML = `
-    <div class="stat"><div class="val">${data.total}</div><div class="lbl">Membres total</div></div>
-    <div class="stat"><div class="val">${publicCount}</div><div class="lbl">Avec @username</div></div>
-    <div class="stat"><div class="val">${data.total - publicCount}</div><div class="lbl">Sans @username</div></div>
+    <div class="stat"><div class="val">${data.total}</div><div class="lbl">Total</div></div>
+    <div class="stat"><div class="val">${data.total_public}</div><div class="lbl">Avec @username</div></div>
+    <div class="stat"><div class="val">${data.total - data.total_public}</div><div class="lbl">Sans @username</div></div>
   `;
 
-  renderTable(allMembers);
+  const display = publicOnly ? data.members.filter(m => m.username) : data.members;
+  renderTable(display);
 }
 
 function renderTable(members) {
@@ -117,48 +214,52 @@ function renderTable(members) {
   tbody.innerHTML = members.map((m, i) => `
     <tr>
       <td style="color:var(--muted)">${i + 1}</td>
-      <td>${m.username ? `<a href="https://t.me/${m.username}" target="_blank" style="color:var(--accent)">@${m.username}</a>` : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${m.username
+        ? `<a href="https://t.me/${m.username}" target="_blank" style="color:var(--accent)">@${m.username}</a>`
+        : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${escHtml(m.first_name)}</td>
       <td>${escHtml(m.last_name)}</td>
-      <td style="color:var(--muted); font-family:monospace">${m.telegram_id}</td>
+      <td style="color:var(--muted);font-family:monospace">${m.telegram_id}</td>
     </tr>
   `).join('');
 }
 
 function filterTable() {
   const q = document.getElementById('searchMembers').value.toLowerCase();
-  const filtered = allMembers.filter(m =>
-    (m.username && m.username.toLowerCase().includes(q)) ||
-    (m.first_name && m.first_name.toLowerCase().includes(q)) ||
-    (m.last_name && m.last_name.toLowerCase().includes(q))
+  const publicOnly = document.getElementById('publicOnly').checked;
+  let list = publicOnly ? allMembers.filter(m => m.username) : allMembers;
+  if (q) list = list.filter(m =>
+    (m.username || '').toLowerCase().includes(q) ||
+    (m.first_name || '').toLowerCase().includes(q) ||
+    (m.last_name || '').toLowerCase().includes(q)
   );
-  renderTable(filtered);
+  renderTable(list);
 }
 
 function copyUsernames() {
-  const usernames = allMembers.filter(m => m.username).map(m => '@' + m.username);
-  navigator.clipboard.writeText(usernames.join('\n'));
-  alert(`${usernames.length} @usernames copiés dans le presse-papiers`);
+  const list = allMembers.filter(m => m.username).map(m => '@' + m.username);
+  navigator.clipboard.writeText(list.join('\n'));
+  alert(`${list.length} @usernames copiés`);
 }
 
 function downloadJSON() {
   if (!exportData) return;
   const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `membres_${exportData.group.username}.json`;
-  a.click();
+  dl(blob, `membres_${exportData.group.username}.json`);
 }
 
 function downloadCSV() {
   if (!allMembers.length) return;
-  const rows = [['telegram_id', 'username', 'first_name', 'last_name']];
+  const rows = [['telegram_id','username','first_name','last_name']];
   allMembers.forEach(m => rows.push([m.telegram_id, m.username, m.first_name, m.last_name]));
-  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  dl(new Blob([csv], {type:'text/csv'}), `membres_${exportData.group.username}.csv`);
+}
+
+function dl(blob, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `membres_${exportData.group.username}.csv`;
+  a.download = name;
   a.click();
 }
 

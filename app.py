@@ -9,7 +9,7 @@ from database import Session, Group, Member, GroupMember, ScrapeJob, Account
 from scraper import TelegramScraper
 from user_lookup import lookup_user_groups
 from categories import CATEGORIES, get_category_seeds
-from member_export import export_group_members
+from member_export import export_group_members, list_forum_topics, export_topic_senders
 
 load_dotenv()
 
@@ -260,6 +260,29 @@ def export_members_page():
     return render_template("export_members.html")
 
 
+@app.route("/export-members/topics")
+def export_members_topics():
+    """Retourne la liste des topics d'une communauté (JSON)."""
+    username = request.args.get("username", "").strip().lstrip("@")
+    if not username:
+        return jsonify({"error": "username manquant"}), 400
+    accounts = load_accounts_from_env()
+    if not accounts:
+        return jsonify({"error": "Aucun compte configuré"}), 400
+
+    async def fetch():
+        return await list_forum_topics(username, accounts)
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(fetch())
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        loop.close()
+
+
 @app.route("/export-members/run")
 def export_members_run():
     """SSE : stream la progression puis envoie le résultat JSON final."""
@@ -288,6 +311,65 @@ def export_members_run():
                     export_group_members(username, accounts, progress_cb=cb)
                 )
                 # Envoie les infos groupe dès qu'on les a
+                q.put({"type": "group_info", **res["group"]})
+                result_holder["data"] = res
+            except Exception as e:
+                result_holder["error"] = str(e)
+            finally:
+                q.put(None)
+                loop.close()
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+        if "error" in result_holder:
+            yield f"data: {json.dumps({'type': 'error', 'msg': result_holder['error']})}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'result', 'data': result_holder.get('data', {})})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/export-members/run-topic")
+def export_members_run_topic():
+    """SSE : stream les expéditeurs uniques d'un topic de forum."""
+    username = request.args.get("username", "").strip().lstrip("@")
+    topic_id = request.args.get("topic_id", type=int)
+    topic_title = request.args.get("topic_title", "").strip()
+
+    if not username or not topic_id:
+        return jsonify({"error": "username et topic_id requis"}), 400
+
+    accounts = load_accounts_from_env()
+    if not accounts:
+        return jsonify({"error": "Aucun compte configuré"}), 400
+
+    import queue as qmod
+
+    def generate():
+        q = qmod.Queue()
+        result_holder = {}
+
+        def cb(msg):
+            q.put({"type": "log", "msg": msg})
+
+        def run():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                res = loop.run_until_complete(
+                    export_topic_senders(username, topic_id, topic_title, accounts, progress_cb=cb)
+                )
                 q.put({"type": "group_info", **res["group"]})
                 result_holder["data"] = res
             except Exception as e:
